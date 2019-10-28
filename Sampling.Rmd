@@ -1,0 +1,378 @@
+---
+title: "Sampling"
+author: "Chaitooler"
+date: "10/20/2019"
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+---
+
+
+
+```{r}
+rm( list=ls() )
+gc()
+
+```
+
+Punto de partida (XGBoost)
+
+```{r}
+
+library( "data.table" )
+library(xgboost)
+library(ggplot2)
+febrero  <-  fread("../datasets/201902.txt", header=TRUE, sep="\t")
+abril <-  fread("../datasets/201904.txt", header=TRUE, sep="\t")
+
+##febrero  <-  readRDS("../datasets/dias/201902.RDS")
+clases_febrero <- ifelse(febrero$clase_ternaria == "BAJA+2", 1, 0)
+febrero$clase_ternaria <- NULL
+
+##abril  <-  readRDS("../datasets/dias/201904.RDS")
+clases_abril <- ifelse(abril$clase_ternaria == "BAJA+2", 1, 0)
+abril$clase_ternaria <- NULL
+
+vsemillas <- c(810757,482071,340979,446441,917513)
+
+
+```
+
+Medimos AUC y tiempo en XGBoost:
+
+```{r}
+
+dtrain   <- xgb.DMatrix( data = data.matrix(febrero),  label = clases_febrero, missing=NA )
+
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb1 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb1$evaluation_log$test_auc_mean)
+
+```
+
+Mejoramos el tiempo de entrenamiento con params:
+
+```{r}
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb2 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    tree_method = "hist",
+    grow_policy="lossguide",
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb2$evaluation_log$test_auc_mean)
+```
+
+Usando el párametro `tree_method`
+
+```{r}
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb3 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    tree_method = "approx",
+    grow_policy="lossguide",
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb3$evaluation_log$test_auc_mean)
+
+```
+
+Veamos el balanceo de nuestros datos:
+```{r}
+
+table(clases_febrero)
+```
+
+
+Downsample:
+```{r}
+library(caret)
+
+set.seed(vsemillas[1])
+
+
+down_feb = downSample(x = febrero, y = as.factor(clases_febrero))
+
+
+table(down_feb$Class)  
+
+
+```
+
+
+
+
+Upsample:
+
+
+```{r}
+library(caret)
+
+set.seed(vsemillas[1])
+
+
+
+up_feb = upSample(x = febrero, y = as.factor(clases_febrero))
+
+
+table(up_feb$Class)  
+  
+
+```
+
+
+SMOTE
+```{r}
+library(DMwR)
+set.seed(vsemillas[1])
+
+febrero_aux = febrero
+febrero_aux$Class = as.factor(clases_febrero)
+
+smote_train = SMOTE(Class ~ ., data=febrero_aux)
+
+table(smote_train$Class)
+
+```
+
+ROSE
+```{r}
+library(ROSE)
+set.seed(vsemillas[1])
+
+febrero_aux = febrero
+febrero_aux$Class = as.factor(clases_febrero)
+
+rose_train = ROSE(Class ~ ., data=febrero_aux)
+
+table(rose_train$data$Class)
+
+```
+
+TRAINING:
+```{r}
+library(dplyr)
+
+ctrl <- trainControl(method='repeatedcv',
+                     number=3,
+                     repeats=2,
+                     verboseIter = TRUE,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+```
+
+```{r}
+set.seed(vsemillas[1])
+
+t0 <- Sys.time()
+
+aux2 = febrero_aux %>% 
+  mutate(Class = factor(Class, 
+                        labels = make.names(levels(Class))))
+
+orig_fit <- train(Class ~ ., data = aux2,
+                  method = 'xgbTree',
+                  metric = 'ROC',
+                  trControl = ctrl,
+                  na.action = na.omit)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+```
+
+```{r}
+set.seed(vsemillas[1])
+
+down_feb1 = down_feb %>% 
+  mutate(Class = factor(Class, 
+                        labels = make.names(levels(Class))))
+
+t0 <- Sys.time()
+
+down_fit <- train(Class ~ ., data = down_feb1,
+                  method = 'xgbLinear',
+                  metric = 'ROC',
+                  trControl = ctrl,
+                  na.action = na.omit)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+```
+
+```{r}
+set.seed(vsemillas[1])
+
+up_feb1 = up_feb %>% 
+  mutate(Class = factor(Class, 
+                        labels = make.names(levels(Class))))
+
+t0 <- Sys.time()
+
+up_fit <- train(Class ~ ., data = up_feb1,
+                  method = 'xgbLinear',
+                  metric = 'ROC',
+                  trControl = ctrl,
+                  na.action = na.omit)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+```
+
+
+```{r}
+library(dplyr)
+library(caret)
+set.seed(vsemillas[1])
+
+smote_train1 = smote_train %>% 
+  mutate(Class = factor(Class, 
+                        labels = make.names(levels(Class))))
+
+t0 <- Sys.time()
+
+smote_fit <- train(Class ~ ., data = smote_train1,
+                  method = 'xgbLinear',
+                  metric = 'ROC',
+                  trControl = ctrl,
+                  na.action = na.omit)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+```
+
+```{r}
+set.seed(vsemillas[1])
+
+rose_train1 = rose_train$data %>% 
+  mutate(Class = factor(Class, 
+                        labels = make.names(levels(Class))))
+
+t0 <- Sys.time()
+
+rose_fit <- train(Class ~ . ,data = rose_train1,
+                  method = 'xgbLinear',
+                  metric = 'ROC',
+                  trControl = ctrl,
+                  na.action = na.omit)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+```
+
+Veamos las metricas:
+```{r}
+outside_models <- list(original = orig_fit,
+                       down = down_fit,
+                       up = up_fit,
+                       SMOTE = smote_fit,
+                       ROSE = rose_fit)
+
+outside_resampling <- resamples(outside_models)
+print('ORIG')
+print(mean(orig_fit$results$ROC))
+print('DOWN')
+print(mean(down_fit$results$ROC))
+print('UP')
+print(mean(up_fit$results$ROC))
+print('SMOTE')
+print(mean(smote_fit$results$ROC))
+print('ROSE')
+print(mean(rose_fit$results$ROC))
+
+```
+
+```{r}
+febrero_aux$Class
+```
+
+
+
+```{r}
+c = ifelse (smote_train1$Class=='X0',0,1)
+d = smote_train1
+d$Class <- NULL
+
+dtrain   <- xgb.DMatrix( data = data.matrix(d),  label = c, missing=NA )
+
+t0 <- Sys.time()
+
+set.seed(vsemillas[1])
+modelo_xgb1 <- xgb.cv( 
+    data = dtrain,  
+    missing = NA,
+    stratified = TRUE,       
+    nround= 25,
+    nfold = 5,
+    watchlist = list(metric='auc'),
+    eval_metric= "auc",
+    maximize =TRUE,
+    objective="binary:logistic",
+    verbose = TRUE
+)
+
+t1 <- Sys.time()
+tiempo <-  as.numeric(  t1 - t0, units = "secs")
+print(paste0("Tiempo: " , tiempo, collapse = " "))
+
+max(modelo_xgb1$evaluation_log$test_auc_mean)
+
+```
+
+
+
+Probar con el conjunto de test (Abril)!
