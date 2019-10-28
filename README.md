@@ -1,6 +1,6 @@
 # dmeyf-sampling
 
-# author Chaitooler
+author @Chaitooler
 
 # Slides
 
